@@ -34,6 +34,44 @@ def parse_spotify_url(url: str):
     if not m:
         return None
     entity_type, entity_id = m.group(1), m.group(2)
+
+    # Try spotdl first to extract full 100+ track playlist
+    try:
+        from spotdl.utils.spotify import SpotifyClient
+        from spotdl.types.playlist import Playlist
+        SpotifyClient.init(
+            client_id='5f573c9620494bae87890c0f08a60293',
+            client_secret='212476d9b0f3472eaa762d90b19b0ba8'
+        )
+        if entity_type == 'playlist':
+            pl = Playlist.from_url(url, fetch_songs=False)
+            title = pl.name or "Spotify Playlist"
+            cover = pl.cover_url or ""
+            tracks = []
+            for idx, s in enumerate(pl.songs):
+                t_title = s.name
+                t_artist = ", ".join(s.artists) if isinstance(s.artists, list) else str(s.artists)
+                q = f"{t_artist} - {t_title}" if t_artist else t_title
+                tid = f"sp_{s.song_id or idx}"
+                path = f"/api/stream-audio?q={urllib.parse.quote(q)}&id={urllib.parse.quote(tid)}"
+                tracks.append({
+                    "id": tid,
+                    "title": t_title,
+                    "artist": t_artist,
+                    "album": title,
+                    "duration": s.duration or 0,
+                    "has_art": bool(s.cover_url or cover),
+                    "artwork": s.cover_url or cover,
+                    "query": q,
+                    "path": path,
+                    "isOnlineStream": True,
+                    "platform": "Spotify"
+                })
+            if tracks:
+                return {"platform": "Spotify", "title": title, "artwork": cover, "tracks": tracks}
+    except Exception as sp_err:
+        print("spotdl full parse note:", sp_err)
+
     embed_url = f"https://open.spotify.com/embed/{entity_type}/{entity_id}"
     req = urllib.request.Request(embed_url, headers={
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
@@ -351,31 +389,32 @@ def resolve_audio_stream(query: str, track_id: str = ""):
                 return inv_stream
         return None
 
-    ydl_opts = {
-        'format': 'bestaudio/best',
-        'quiet': True,
-        'no_warnings': True,
-        'skip_download': True,
-        'noplaylist': True,
-        'extractor_args': {'youtube': {'player_client': ['android', 'ios']}}
-    }
-
     target = query
     if video_id:
         target = f"https://www.youtube.com/watch?v={video_id}"
     elif not target.startswith("http"):
         target = f"ytsearch1:{query} audio"
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            res = ydl.extract_info(target, download=False)
-            entry = res['entries'][0] if 'entries' in res and res['entries'] else res
-            stream_url = entry.get('url')
-            if stream_url:
-                STREAM_CACHE[cache_key] = (stream_url, now)
-                return stream_url
-    except Exception as e:
-        print(f"Error resolving stream for '{query}':", e)
+    # Prioritize visionos (bypasses bot verification and JS runtime), then android/ios, then web
+    for client_list in [['visionos'], ['android', 'ios'], ['web']]:
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'quiet': True,
+            'no_warnings': True,
+            'skip_download': True,
+            'noplaylist': True,
+            'extractor_args': {'youtube': {'player_client': client_list}}
+        }
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                res = ydl.extract_info(target, download=False)
+                entry = res['entries'][0] if 'entries' in res and res['entries'] else res
+                stream_url = entry.get('url')
+                if stream_url:
+                    STREAM_CACHE[cache_key] = (stream_url, now)
+                    return stream_url
+        except Exception as e:
+            print(f"Error resolving stream with {client_list} for '{query}':", e)
 
     if video_id:
         inv_stream = resolve_invidious_stream(video_id)
@@ -388,7 +427,7 @@ def resolve_audio_stream(query: str, track_id: str = ""):
 @app.get("/")
 @app.get("/health")
 def health():
-    return {"status": "ok", "app": "RetroPod Audio Cloud Bridge", "version": "1.0.5"}
+    return {"status": "ok", "app": "RetroPod Audio Cloud Bridge", "version": "1.0.6"}
 
 @app.get("/api/debug-stream")
 def debug_stream(q: str = "Chappell Roan - Good Luck, Babe!", id: str = "yt_S61JT1h1ycw"):
@@ -396,7 +435,7 @@ def debug_stream(q: str = "Chappell Roan - Good Luck, Babe!", id: str = "yt_S61J
     result = {"q": q, "id": id}
     target = f"https://www.youtube.com/watch?v={id[3:]}" if id.startswith("yt_") and len(id) > 3 else f"ytsearch1:{q} audio"
     result["target"] = target
-    for clients in [['android', 'ios'], ['ios'], ['android'], ['web'], ['mweb']]:
+    for clients in [['visionos'], ['android', 'ios'], ['ios'], ['android'], ['web']]:
         key = "_".join(clients)
         ydl_opts = {
             'format': 'bestaudio/best',
