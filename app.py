@@ -145,75 +145,52 @@ def parse_apple_music_url(url: str):
         print("Apple Music parser error:", e)
     return None
 
+from curl_cffi import requests as cffi_requests
+
 def parse_anghami_url(url: str):
-    curl_cmd = [
-        "curl.exe" if sys.platform.startswith('win') else "curl",
-        "-A", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "-H", "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "-H", "Accept-Language: en-US,en;q=0.9",
-        "-L", "-s",
-        url
-    ]
-    html = ""
     try:
-        res = subprocess.run(curl_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
-        html = res.stdout
-    except Exception as e:
-        print("curl execution error:", e)
-
-    if not html:
-        return None
-
-    try:
+        s = cffi_requests.Session()
+        resp = s.get(url, impersonate="chrome124", allow_redirects=True, timeout=15)
+        html = resp.text
         scripts = re.findall(r'<script\b[^>]*>(.*?)</script>', html, re.DOTALL)
         for s in scripts:
-            s = s.strip()
-            if '"MusicPlaylist"' in s or '"MusicAlbum"' in s or '"MusicRecording"' in s:
-                try:
-                    data = json.loads(s)
-                    if data.get('@type') in ('MusicPlaylist', 'MusicAlbum', 'MusicRecording'):
-                        title = data.get('name') or "Anghami Playlist"
-                        raw_tracks = data.get('track', [])
-                        if not raw_tracks and data.get('@type') == 'MusicRecording':
-                            raw_tracks = [data]
-                        tracks = []
-                        for idx, t in enumerate(raw_tracks):
-                            t_name = t.get('name') or 'Unknown Title'
-                            by = t.get('byArtist', {})
-                            t_artist = by.get('name') if isinstance(by, dict) else str(by)
-                            album_obj = t.get('inAlbum', {})
-                            t_album = album_obj.get('name') if isinstance(album_obj, dict) else (title or "Anghami")
-                            t_image = t.get('image') or ''
-                            if 'size=120' in t_image:
-                                t_image = t_image.replace('size=120', 'size=600')
-                            q = f"{t_artist} - {t_name}" if t_artist else t_name
-                            tid = f"ang_{idx}"
-                            path = f"/api/stream-audio?q={urllib.parse.quote(q)}&id={urllib.parse.quote(tid)}"
-                            tracks.append({
-                                "id": tid,
-                                "title": t_name,
-                                "artist": t_artist,
-                                "album": t_album,
-                                "duration": 0,
-                                "has_art": bool(t_image),
-                                "artwork": t_image,
-                                "query": q,
-                                "path": path,
-                                "isOnlineStream": True,
-                                "platform": "Anghami"
-                            })
-                        cover = tracks[0]["artwork"] if tracks and tracks[0]["artwork"] else ""
-                        return {
-                            "platform": "Anghami",
-                            "title": title,
-                            "artwork": cover,
-                            "tracks": tracks
-                        }
-                except Exception:
-                    continue
+            if 'MusicPlaylist' in s or 'MusicAlbum' in s or 'MusicRecording' in s:
+                data = json.loads(s.strip())
+                if data.get('@type') in ('MusicPlaylist', 'MusicAlbum', 'MusicRecording'):
+                    title = data.get('name') or "Anghami Playlist"
+                    raw_tracks = data.get('track', [])
+                    tracks = []
+                    for idx, t in enumerate(raw_tracks):
+                        t_name = t.get('name') or 'Unknown Title'
+                        by = t.get('byArtist', {})
+                        t_artist = by.get('name') if isinstance(by, dict) else str(by)
+                        t_image = t.get('image') or ''
+                        if 'size=120' in t_image:
+                            t_image = t_image.replace('size=120', 'size=600')
+                        q = f"{t_artist} - {t_name}" if t_artist else t_name
+                        tid = f"ang_{idx}"
+                        path = f"/api/stream-audio?q={urllib.parse.quote(q)}&id={urllib.parse.quote(tid)}"
+                        tracks.append({
+                            "id": tid,
+                            "title": t_name,
+                            "artist": t_artist,
+                            "album": title,
+                            "duration": 0,
+                            "has_art": bool(t_image),
+                            "artwork": t_image,
+                            "query": q,
+                            "path": path,
+                            "isOnlineStream": True,
+                            "platform": "Anghami"
+                        })
+                    return {
+                        "platform": "Anghami",
+                        "title": title,
+                        "artwork": tracks[0]["artwork"] if tracks and tracks[0]["artwork"] else "",
+                        "tracks": tracks
+                    }
     except Exception as e:
-        print("Anghami parsing error:", e)
-
+        print("Anghami cffi error:", e)
     return None
 
 def parse_ytdlp_url(url: str):
