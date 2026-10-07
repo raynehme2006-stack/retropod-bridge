@@ -1,4 +1,6 @@
 import os
+import sys
+import subprocess
 import re
 import json
 import time
@@ -144,69 +146,31 @@ def parse_apple_music_url(url: str):
     return None
 
 def parse_anghami_url(url: str):
-    m = re.search(r'anghami\.com/(playlist|album|song)/([0-9]+)', url)
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-    }
-    candidates = [url]
-    if m:
-        etype, eid = m.group(1), m.group(2)
-        candidates.append(f"https://play.anghami.com/{etype}/{eid}")
+    curl_cmd = [
+        "curl.exe" if sys.platform.startswith('win') else "curl",
+        "-A", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "-H", "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "-H", "Accept-Language: en-US,en;q=0.9",
+        "-L", "-s",
+        url
+    ]
+    html = ""
+    try:
+        res = subprocess.run(curl_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
+        html = res.stdout
+    except Exception as e:
+        print("curl execution error:", e)
 
-    for target in candidates:
-        try:
-            req = urllib.request.Request(target, headers=headers)
-            with urllib.request.urlopen(req, timeout=12) as resp:
-                html = resp.read().decode('utf-8', errors='replace')
+    if not html:
+        return None
 
-            # Strategy A: NextJS state data
-            match = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html)
-            if match:
+    try:
+        scripts = re.findall(r'<script\b[^>]*>(.*?)</script>', html, re.DOTALL)
+        for s in scripts:
+            s = s.strip()
+            if '"MusicPlaylist"' in s or '"MusicAlbum"' in s or '"MusicRecording"' in s:
                 try:
-                    data = json.loads(match.group(1))
-                    page_props = data.get("props", {}).get("pageProps", {})
-                    data_obj = page_props.get("data") or page_props.get("playlist") or page_props.get("album") or {}
-                    title = data_obj.get("title") or data_obj.get("name") or "Anghami Playlist"
-                    cover = data_obj.get("coverArt") or data_obj.get("image") or ""
-                    raw_songs = data_obj.get("songs") or data_obj.get("tracks") or []
-                    if raw_songs:
-                        tracks = []
-                        for idx, s in enumerate(raw_songs):
-                            t_title = s.get("title") or s.get("name") or "Unknown Title"
-                            t_artist = s.get("artist") or s.get("artistName") or ""
-                            t_dur = int(s.get("duration") or 0)
-                            t_art = s.get("coverArt") or s.get("image") or cover
-                            q = f"{t_artist} - {t_title}" if t_artist else t_title
-                            tid = f"ang_{s.get('id') or idx}"
-                            path = f"/api/stream-audio?q={urllib.parse.quote(q)}&id={urllib.parse.quote(tid)}"
-                            tracks.append({
-                                "id": tid,
-                                "title": t_title,
-                                "artist": t_artist,
-                                "album": title,
-                                "duration": t_dur,
-                                "has_art": bool(t_art),
-                                "artwork": t_art,
-                                "query": q,
-                                "path": path,
-                                "isOnlineStream": True,
-                                "platform": "Anghami"
-                            })
-                        return {
-                            "platform": "Anghami",
-                            "title": title,
-                            "artwork": cover,
-                            "tracks": tracks
-                        }
-                except Exception:
-                    pass
-
-            # Strategy B: JSON-LD schema
-            blocks = re.findall(r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>', html, re.DOTALL)
-            for block in blocks:
-                try:
-                    data = json.loads(block)
+                    data = json.loads(s)
                     if data.get('@type') in ('MusicPlaylist', 'MusicAlbum', 'MusicRecording'):
                         title = data.get('name') or "Anghami Playlist"
                         raw_tracks = data.get('track', [])
@@ -217,14 +181,11 @@ def parse_anghami_url(url: str):
                             t_name = t.get('name') or 'Unknown Title'
                             by = t.get('byArtist', {})
                             t_artist = by.get('name') if isinstance(by, dict) else str(by)
-                            t_thumb = t.get('thumbnailUrl') or ''
-                            dur_str = t.get('duration') or ''
-                            dur_sec = 0
-                            dur_match = re.match(r'PT(?:(\d+)M)?(?:(\d+)S)?', dur_str)
-                            if dur_match:
-                                m_val = int(dur_match.group(1) or 0)
-                                s_val = int(dur_match.group(2) or 0)
-                                dur_sec = m_val * 60 + s_val
+                            album_obj = t.get('inAlbum', {})
+                            t_album = album_obj.get('name') if isinstance(album_obj, dict) else (title or "Anghami")
+                            t_image = t.get('image') or ''
+                            if 'size=120' in t_image:
+                                t_image = t_image.replace('size=120', 'size=600')
                             q = f"{t_artist} - {t_name}" if t_artist else t_name
                             tid = f"ang_{idx}"
                             path = f"/api/stream-audio?q={urllib.parse.quote(q)}&id={urllib.parse.quote(tid)}"
@@ -232,10 +193,10 @@ def parse_anghami_url(url: str):
                                 "id": tid,
                                 "title": t_name,
                                 "artist": t_artist,
-                                "album": title,
-                                "duration": dur_sec,
-                                "has_art": bool(t_thumb),
-                                "artwork": t_thumb,
+                                "album": t_album,
+                                "duration": 0,
+                                "has_art": bool(t_image),
+                                "artwork": t_image,
                                 "query": q,
                                 "path": path,
                                 "isOnlineStream": True,
@@ -250,8 +211,9 @@ def parse_anghami_url(url: str):
                         }
                 except Exception:
                     continue
-        except Exception as e:
-            print("Anghami parser error on target:", e)
+    except Exception as e:
+        print("Anghami parsing error:", e)
+
     return None
 
 def parse_ytdlp_url(url: str):
