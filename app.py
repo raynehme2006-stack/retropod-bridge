@@ -349,34 +349,42 @@ def resolve_audio_stream(query: str, track_id: str = ""):
 @app.get("/")
 @app.get("/health")
 def health():
-    return {"status": "ok", "app": "RetroPod Audio Cloud Bridge", "version": "1.0.2"}
+    return {"status": "ok", "app": "RetroPod Audio Cloud Bridge", "version": "1.0.3"}
 
 @app.get("/api/diagnose")
 def diagnose(url: str = "https://play.anghami.com/playlist/293737752"):
     diag = {}
     try:
         from curl_cffi import requests as cffi_requests
-        diag["cffi_import"] = "OK"
-        try:
-            r = cffi_requests.get(url, impersonate="safari15_5", allow_redirects=True, timeout=8)
-            diag["cffi_get"] = {
-                "status": r.status_code,
-                "url": r.url,
-                "len": len(r.text),
-                "has_schema": "MusicPlaylist" in r.text,
-                "snippet": r.text[:200]
-            }
-        except Exception as e:
-            diag["cffi_get_error"] = str(e)
+        for imp in ["chrome110", "safari15_5"]:
+            try:
+                r = cffi_requests.get(url, impersonate=imp, timeout=8)
+                diag[f"cffi_{imp}"] = {
+                    "status": r.status_code,
+                    "len": len(r.text),
+                    "has_schema": "MusicPlaylist" in r.text,
+                    "html_preview": r.text[:2500]
+                }
+            except Exception as ex:
+                diag[f"cffi_{imp}_err"] = str(ex)
     except Exception as e:
         diag["cffi_import_error"] = str(e)
 
     try:
         curl_bin = "curl.exe" if sys.platform == "win32" else "curl"
-        r2 = subprocess.run([curl_bin, "--version"], capture_output=True, text=True)
-        diag["curl_bin"] = r2.stdout.splitlines()[0] if r2.stdout else "empty"
+        r2 = subprocess.run([
+            curl_bin, "-s", "-L",
+            "-A", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            url
+        ], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
+        diag["curl_output"] = {
+            "code": r2.returncode,
+            "len": len(r2.stdout),
+            "has_schema": "MusicPlaylist" in r2.stdout,
+            "preview": r2.stdout[:2500]
+        }
     except Exception as e:
-        diag["curl_bin_error"] = str(e)
+        diag["curl_error"] = str(e)
 
     return diag
 
