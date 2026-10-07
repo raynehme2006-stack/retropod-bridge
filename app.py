@@ -145,69 +145,27 @@ def parse_apple_music_url(url: str):
         print("Apple Music parser error:", e)
     return None
 
-def resolve_anghami_shortlink(url: str) -> str:
-    if "open.anghami.com" in url or "anghami.app.link" in url:
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            html = urllib.request.urlopen(req, timeout=8).read().decode('utf-8', errors='replace')
-            m = re.search(r'https?://play\.anghami\.com/(playlist|album|song)/\d+', html)
-            if m:
-                return m.group(0)
-        except Exception as e:
-            print("Shortlink resolve note:", e)
-    return url
-
-def resolve_anghami_shortlink(url: str) -> str:
-    curr = url
-    for _ in range(5):
-        if 'play.anghami.com' in curr:
-            break
-        class NoRedirect(urllib.request.HTTPRedirectHandler):
-            def redirect_request(self, req, fp, code, msg, headers, newurl):
-                return None
-        opener = urllib.request.build_opener(NoRedirect)
-        req = urllib.request.Request(curr, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'})
-        try:
-            resp = opener.open(req)
-            loc = resp.headers.get('Location')
-            if loc:
-                curr = loc
-            else:
-                break
-        except urllib.error.HTTPError as e:
-            loc = e.headers.get('Location')
-            if loc:
-                curr = loc
-            else:
-                break
-        except Exception:
-            break
-    m = re.search(r'https?://play\.anghami\.com/(?:playlist|album|song)/\d+', curr)
-    if m:
-        return m.group(0)
-    return curr
-
 def parse_anghami_url(url: str):
-    url = resolve_anghami_shortlink(url)
     html = ""
-    # Method 1: curl_cffi with Chrome impersonation
-    try:
-        from curl_cffi import requests as cffi_requests
-        resp = cffi_requests.get(url, impersonate="chrome124", allow_redirects=True, timeout=15)
-        if resp.status_code == 200 and len(resp.text) > 1000:
-            html = resp.text
-    except Exception as e:
-        print("Anghami cffi error:", e)
+    # curl_cffi with safari15_5 and chrome110 bypasses Cloudflare and follows Branch redirects instantly
+    for profile in ["safari15_5", "chrome110"]:
+        try:
+            from curl_cffi import requests as cffi_requests
+            resp = cffi_requests.get(url, impersonate=profile, allow_redirects=True, timeout=12)
+            if resp.status_code == 200 and len(resp.text) > 1000 and ("MusicPlaylist" in resp.text or "MusicAlbum" in resp.text or "MusicRecording" in resp.text):
+                html = resp.text
+                break
+        except Exception as e:
+            print(f"Anghami cffi {profile} error:", e)
 
-    # Method 2: System curl subprocess fallback
     if not html:
         try:
             curl_bin = "curl.exe" if sys.platform == "win32" else "curl"
             res = subprocess.run([
                 curl_bin, "-s", "-L",
-                "-A", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "-A", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.5 Safari/605.1.15",
                 url
-            ], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
+            ], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=12)
             if res.stdout and len(res.stdout) > 1000:
                 html = res.stdout
         except Exception as e:
@@ -267,7 +225,6 @@ def parse_anghami_url(url: str):
         print("Anghami parsing error:", e)
 
     return None
-
 
 def parse_ytdlp_url(url: str):
     if not yt_dlp:
