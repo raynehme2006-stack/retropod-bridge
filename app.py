@@ -157,15 +157,61 @@ def resolve_anghami_shortlink(url: str) -> str:
             print("Shortlink resolve note:", e)
     return url
 
+def resolve_anghami_shortlink(url: str) -> str:
+    curr = url
+    for _ in range(5):
+        if 'play.anghami.com' in curr:
+            break
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                return None
+        opener = urllib.request.build_opener(NoRedirect)
+        req = urllib.request.Request(curr, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'})
+        try:
+            resp = opener.open(req)
+            loc = resp.headers.get('Location')
+            if loc:
+                curr = loc
+            else:
+                break
+        except urllib.error.HTTPError as e:
+            loc = e.headers.get('Location')
+            if loc:
+                curr = loc
+            else:
+                break
+        except Exception:
+            break
+    m = re.search(r'https?://play\.anghami\.com/(?:playlist|album|song)/\d+', curr)
+    if m:
+        return m.group(0)
+    return curr
+
 def parse_anghami_url(url: str):
     url = resolve_anghami_shortlink(url)
     html = ""
+    # Method 1: curl_cffi with Chrome impersonation
     try:
         from curl_cffi import requests as cffi_requests
         resp = cffi_requests.get(url, impersonate="chrome124", allow_redirects=True, timeout=15)
-        html = resp.text
+        if resp.status_code == 200 and len(resp.text) > 1000:
+            html = resp.text
     except Exception as e:
         print("Anghami cffi error:", e)
+
+    # Method 2: System curl subprocess fallback
+    if not html:
+        try:
+            curl_bin = "curl.exe" if sys.platform == "win32" else "curl"
+            res = subprocess.run([
+                curl_bin, "-s", "-L",
+                "-A", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                url
+            ], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
+            if res.stdout and len(res.stdout) > 1000:
+                html = res.stdout
+        except Exception as e:
+            print("Anghami curl subprocess error:", e)
 
     if not html:
         return None
@@ -221,6 +267,7 @@ def parse_anghami_url(url: str):
         print("Anghami parsing error:", e)
 
     return None
+
 
 def parse_ytdlp_url(url: str):
     if not yt_dlp:
