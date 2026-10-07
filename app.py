@@ -388,7 +388,33 @@ def resolve_audio_stream(query: str, track_id: str = ""):
 @app.get("/")
 @app.get("/health")
 def health():
-    return {"status": "ok", "app": "RetroPod Audio Cloud Bridge", "version": "1.0.4"}
+    return {"status": "ok", "app": "RetroPod Audio Cloud Bridge", "version": "1.0.5"}
+
+@app.get("/api/debug-stream")
+def debug_stream(q: str = "Chappell Roan - Good Luck, Babe!", id: str = "yt_S61JT1h1ycw"):
+    import traceback
+    result = {"q": q, "id": id}
+    target = f"https://www.youtube.com/watch?v={id[3:]}" if id.startswith("yt_") and len(id) > 3 else f"ytsearch1:{q} audio"
+    result["target"] = target
+    for clients in [['android', 'ios'], ['ios'], ['android'], ['web'], ['mweb']]:
+        key = "_".join(clients)
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'quiet': True,
+            'no_warnings': True,
+            'skip_download': True,
+            'noplaylist': True,
+            'extractor_args': {'youtube': {'player_client': clients}}
+        }
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                res = ydl.extract_info(target, download=False)
+                entry = res['entries'][0] if 'entries' in res and res.get('entries') else res
+                url = entry.get('url')
+                result[key] = {"success": bool(url), "url_len": len(url) if url else 0}
+        except Exception as e:
+            result[key] = {"error": str(e), "trace": traceback.format_exc()[:300]}
+    return result
 
 @app.get("/api/diagnose")
 def diagnose(url: str = "https://play.anghami.com/playlist/293737752"):
