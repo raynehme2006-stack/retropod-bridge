@@ -145,13 +145,41 @@ def parse_apple_music_url(url: str):
         print("Apple Music parser error:", e)
     return None
 
+def resolve_anghami_url(url: str) -> str:
+    url = url.strip()
+    if url.isdigit():
+        return f"https://play.anghami.com/playlist/{url}"
+    if "play.anghami.com" in url:
+        return url
+
+    final_url = [url]
+    class InterceptRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            if "play.anghami.com" in newurl:
+                final_url[0] = newurl
+                raise StopIteration(newurl)
+            return urllib.request.Request(newurl, headers=req.headers)
+
+    opener = urllib.request.build_opener(InterceptRedirect)
+    try:
+        opener.open(urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"}))
+    except StopIteration:
+        pass
+    except Exception:
+        pass
+
+    m = re.search(r'https?://play\.anghami\.com/(?:playlist|album|song)/\d+', final_url[0])
+    return m.group(0) if m else final_url[0]
+
 def parse_anghami_url(url: str):
+    target_url = resolve_anghami_url(url)
     html = ""
-    # curl_cffi with safari15_5 and chrome110 bypasses Cloudflare and follows Branch redirects instantly
+
+    # curl_cffi with safari15_5 and chrome110 bypasses Cloudflare and fetches schema cleanly
     for profile in ["safari15_5", "chrome110"]:
         try:
             from curl_cffi import requests as cffi_requests
-            resp = cffi_requests.get(url, impersonate=profile, allow_redirects=True, timeout=12)
+            resp = cffi_requests.get(target_url, impersonate=profile, timeout=12)
             if resp.status_code == 200 and len(resp.text) > 1000 and ("MusicPlaylist" in resp.text or "MusicAlbum" in resp.text or "MusicRecording" in resp.text):
                 html = resp.text
                 break
@@ -164,7 +192,7 @@ def parse_anghami_url(url: str):
             res = subprocess.run([
                 curl_bin, "-s", "-L",
                 "-A", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.5 Safari/605.1.15",
-                url
+                target_url
             ], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=12)
             if res.stdout and len(res.stdout) > 1000:
                 html = res.stdout
@@ -321,7 +349,36 @@ def resolve_audio_stream(query: str, track_id: str = ""):
 @app.get("/")
 @app.get("/health")
 def health():
-    return {"status": "ok", "app": "RetroPod Audio Cloud Bridge", "version": "1.0.0"}
+    return {"status": "ok", "app": "RetroPod Audio Cloud Bridge", "version": "1.0.2"}
+
+@app.get("/api/diagnose")
+def diagnose(url: str = "https://play.anghami.com/playlist/293737752"):
+    diag = {}
+    try:
+        from curl_cffi import requests as cffi_requests
+        diag["cffi_import"] = "OK"
+        try:
+            r = cffi_requests.get(url, impersonate="safari15_5", allow_redirects=True, timeout=8)
+            diag["cffi_get"] = {
+                "status": r.status_code,
+                "url": r.url,
+                "len": len(r.text),
+                "has_schema": "MusicPlaylist" in r.text,
+                "snippet": r.text[:200]
+            }
+        except Exception as e:
+            diag["cffi_get_error"] = str(e)
+    except Exception as e:
+        diag["cffi_import_error"] = str(e)
+
+    try:
+        curl_bin = "curl.exe" if sys.platform == "win32" else "curl"
+        r2 = subprocess.run([curl_bin, "--version"], capture_output=True, text=True)
+        diag["curl_bin"] = r2.stdout.splitlines()[0] if r2.stdout else "empty"
+    except Exception as e:
+        diag["curl_bin_error"] = str(e)
+
+    return diag
 
 @app.post("/api/parse-playlist")
 async def api_parse_playlist(request: Request):
@@ -334,7 +391,7 @@ async def api_parse_playlist(request: Request):
         raise HTTPException(status_code=400, detail="No playlist URL provided")
 
     res = None
-    if "anghami.com" in url:
+    if "anghami" in url or "anghami.app.link" in url or url.isdigit():
         res = parse_anghami_url(url)
     elif "spotify.com" in url:
         res = parse_spotify_url(url)
