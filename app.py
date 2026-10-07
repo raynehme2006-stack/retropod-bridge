@@ -282,8 +282,9 @@ def parse_ytdlp_url(url: str):
                     t_artist = parts[0].strip()
                     t_title = parts[1].strip()
                 t_duration = int(e.get('duration') or 0)
-                t_thumb = e.get('thumbnail') or (e.get('thumbnails', [{}])[-1].get('url') if e.get('thumbnails') else '')
-                tid = f"yt_{e.get('id') or idx}"
+                raw_id = e.get('id') or str(idx)
+                t_thumb = f"https://i.ytimg.com/vi/{raw_id}/hqdefault.jpg" if raw_id and not raw_id.isdigit() else (e.get('thumbnail') or (e.get('thumbnails', [{}])[-1].get('url') if e.get('thumbnails') else ''))
+                tid = f"yt_{raw_id}"
                 q = f"{t_artist} - {t_title}" if t_artist else t_title
                 path = f"/api/stream-audio?q={urllib.parse.quote(q)}&id={urllib.parse.quote(tid)}"
                 tracks.append({
@@ -299,7 +300,10 @@ def parse_ytdlp_url(url: str):
                     "isOnlineStream": True,
                     "platform": "YouTube / Web"
                 })
-            cover = info.get('thumbnail') or (tracks[0]["artwork"] if tracks and tracks[0]["artwork"] else "")
+            info_thumbs = info.get('thumbnails') or []
+            cover = info.get('thumbnail') or (info_thumbs[-1].get('url') if info_thumbs else '')
+            if not cover and tracks and tracks[0].get("artwork"):
+                cover = tracks[0]["artwork"]
             return {
                 "platform": "YouTube / Web",
                 "title": title,
@@ -310,6 +314,24 @@ def parse_ytdlp_url(url: str):
         print("yt-dlp parser error:", e)
         return None
 
+def resolve_invidious_stream(video_id: str):
+    instances = [
+        "https://invidious.f5.si",
+        "https://inv.tux.pizza",
+        "https://invidious.nerdvpn.de"
+    ]
+    for inst in instances:
+        try:
+            r = requests.get(f"{inst}/api/v1/videos/{video_id}", timeout=5)
+            if r.status_code == 200:
+                data = r.json()
+                for fmt in data.get('adaptiveFormats', []):
+                    if 'audio' in fmt.get('type', '') and fmt.get('url'):
+                        return fmt['url']
+        except Exception:
+            continue
+    return None
+
 def resolve_audio_stream(query: str, track_id: str = ""):
     cache_key = (query.strip(), track_id.strip())
     now = time.time()
@@ -317,20 +339,30 @@ def resolve_audio_stream(query: str, track_id: str = ""):
     if cached and (now - cached[1] < 10800): # 3 hour cache
         return cached[0]
 
+    video_id = ""
+    if track_id.startswith("yt_") and len(track_id) > 3:
+        video_id = track_id[3:]
+
     if not yt_dlp:
+        if video_id:
+            inv_stream = resolve_invidious_stream(video_id)
+            if inv_stream:
+                STREAM_CACHE[cache_key] = (inv_stream, now)
+                return inv_stream
         return None
 
     ydl_opts = {
-        'format': 'bestaudio[ext=m4a]/bestaudio/best',
+        'format': 'bestaudio/best',
         'quiet': True,
         'no_warnings': True,
         'skip_download': True,
         'noplaylist': True,
+        'extractor_args': {'youtube': {'player_client': ['android', 'ios']}}
     }
 
     target = query
-    if track_id.startswith("yt_") and len(track_id) > 3:
-        target = f"https://www.youtube.com/watch?v={track_id[3:]}"
+    if video_id:
+        target = f"https://www.youtube.com/watch?v={video_id}"
     elif not target.startswith("http"):
         target = f"ytsearch1:{query} audio"
 
@@ -344,12 +376,19 @@ def resolve_audio_stream(query: str, track_id: str = ""):
                 return stream_url
     except Exception as e:
         print(f"Error resolving stream for '{query}':", e)
+
+    if video_id:
+        inv_stream = resolve_invidious_stream(video_id)
+        if inv_stream:
+            STREAM_CACHE[cache_key] = (inv_stream, now)
+            return inv_stream
+
     return None
 
 @app.get("/")
 @app.get("/health")
 def health():
-    return {"status": "ok", "app": "RetroPod Audio Cloud Bridge", "version": "1.0.3"}
+    return {"status": "ok", "app": "RetroPod Audio Cloud Bridge", "version": "1.0.4"}
 
 @app.get("/api/diagnose")
 def diagnose(url: str = "https://play.anghami.com/playlist/293737752"):
